@@ -1,0 +1,14 @@
+.venv*/
+node_modules/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.env
+reports/
+responses/
+logs/
+.deepeval/
+.promptfoo/
+mlruns/
+mlartifacts/
+*.db

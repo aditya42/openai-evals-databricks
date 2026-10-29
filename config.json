@@ -1,0 +1,19 @@
+{
+  "verified_on": "2026-10-28",
+  "service": "openai-llm-evals",
+  "dataset": "data/cases.json",
+  "models": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-luna"],
+  "reasoning_effort": "low",
+  "max_output_tokens": 2048,
+  "timeout_seconds": 90,
+  "judge_model": "gpt-6-astra",
+  "judge_reasoning_effort": "low",
+  "judge_max_output_tokens": 8192,
+  "thresholds": {
+    "deepeval": 0.8,
+    "ragas": 0.9,
+    "promptfoo": 1.0,
+    "trulens": 0.8,
+    "inspect": 1.0
+  }
+}

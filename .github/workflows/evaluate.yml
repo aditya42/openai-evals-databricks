@@ -1,0 +1,156 @@
+name: Evaluate OpenAI models and publish to Databricks
+# Explicit launch: API evaluation and SQL warehouse usage incur charges.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG || 'workspace' }}
+  DATABRICKS_SCHEMA: ${{ vars.DATABRICKS_SCHEMA || 'default' }}
+  DATABRICKS_DASHBOARD_PARENT: ${{ vars.DATABRICKS_DASHBOARD_PARENT || '/Shared' }}
+  DATABRICKS_DASHBOARD_ID: ${{ vars.DATABRICKS_DASHBOARD_ID }}
+  MLFLOW_TRACKING_URI: databricks
+  MLFLOW_EXPERIMENT_NAME: ${{ vars.MLFLOW_EXPERIMENT_NAME || '/Shared/openai-llm-evals' }}
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      model_matrix: ${{ steps.matrix.outputs.models }}
+      eval_matrix: ${{ steps.matrix.outputs.evals }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --extra databricks
+      - name: Read model and framework matrix
+        id: matrix
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json, os
+          from llm_eval.core import load_config, FRAMEWORKS
+          config = load_config()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('models=' + json.dumps({'model': config['models']}) + '\n')
+              output.write('evals=' + json.dumps({'model': config['models'], 'framework': list(FRAMEWORKS)}) + '\n')
+          PY
+      - name: Check account configuration and model access
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: uv run --no-sync python scripts/preflight.py
+      - name: Create result tables if absent
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: uv run --no-sync python -m llm_eval.backend bootstrap
+      - name: Create or update the Databricks dashboard
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: uv run --no-sync python -m llm_eval.dashboard deploy
+      - name: Retain dashboard deployment details
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-deployment
+          path: reports/dashboard.json
+          retention-days: 14
+          if-no-files-found: error
+
+  generate:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.prepare.outputs.model_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --extra databricks
+      - name: Generate each model response once
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: uv run --no-sync python -m llm_eval generate --model '${{ matrix.model }}' --output 'responses/${{ matrix.model }}.json'
+      - name: Retain generation artifact, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responses-${{ matrix.model }}
+          path: responses/${{ matrix.model }}.json
+          retention-days: 7
+          if-no-files-found: error
+      - name: Publish generation metadata once
+        if: ${{ always() && hashFiles(format('responses/{0}.json', matrix.model)) != '' }}
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: uv run --no-sync python -m llm_eval.backend publish-generation 'responses/${{ matrix.model }}.json'
+
+  evaluate:
+    needs: [prepare, generate]
+    if: ${{ always() && !cancelled() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.prepare.outputs.eval_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        if: matrix.framework == 'promptfoo'
+        with:
+          node-version: '24'
+          cache: npm
+      - run: uv sync --locked --extra '${{ matrix.framework }}' --extra databricks
+      - run: npm ci --no-audit --no-fund
+        if: matrix.framework == 'promptfoo'
+      - uses: actions/download-artifact@v4
+        with:
+          name: responses-${{ matrix.model }}
+          path: responses
+      - name: Run native framework checks
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: uv run --no-sync python -m llm_eval evaluate --framework '${{ matrix.framework }}' --model '${{ matrix.model }}' --responses 'responses/${{ matrix.model }}.json' --out 'reports/${{ matrix.framework }}/${{ matrix.model }}'
+      - name: Publish both passing and failing evaluations
+        if: ${{ always() && hashFiles(format('reports/{0}/{1}/results.json', matrix.framework, matrix.model)) != '' }}
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+        run: uv run --no-sync python -m llm_eval.backend publish-results 'reports/${{ matrix.framework }}/${{ matrix.model }}/results.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ matrix.framework }}-${{ matrix.model }}
+          path: reports/${{ matrix.framework }}/${{ matrix.model }}/
+          retention-days: 14
+          if-no-files-found: error
+

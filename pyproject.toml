@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openai-evals-databricks"
+version = "0.1.0"
+description = "Five OSS evaluation frameworks with shared OpenAI responses, MLflow, and Databricks AI/BI reporting"
+requires-python = ">=3.11"
+dependencies = ["openai==1.109.1", "httpx[socks]==0.28.1", "pydantic==2.14.1"]
+
+[project.optional-dependencies]
+deepeval = ["deepeval==4.3.2"]
+ragas = ["ragas==0.4.3", "langchain-community==0.3.31"]
+trulens = ["trulens-providers-openai==2.16.0"]
+inspect = ["inspect-ai==0.3.285"]
+promptfoo = []
+databricks = ["databricks-sdk==0.157.0", "mlflow-skinny==3.17.2", "databricks-labs-lsql==0.17.0"]
+dev = ["pytest==9.2.0", "PyYAML==6.0.3"]
+
+[tool.setuptools.packages.find]
+include = ["llm_eval*"]
+
+[tool.setuptools.package-data]
+"llm_eval.adapters" = ["*.cjs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"
+

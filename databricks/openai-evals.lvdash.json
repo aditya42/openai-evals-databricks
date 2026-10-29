@@ -1,0 +1,1369 @@
+{
+  "datasets": [
+    {
+      "displayName": "Overview",
+      "name": "overview",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1), suites AS (\n SELECT max(r.batch_id) AS batch_id, max(r.event_time) AS event_time,\n        count(*) AS received_suites, 15 AS expected_suites,\n        sum(r.failed) AS failed_cases, sum(r.errors) AS error_cases\n FROM `workspace`.`default`.`eval_runs` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256\n), gen AS (\n SELECT count(*) AS received_generations, 36 AS expected_generations,\n        count_if(r.status='error') AS generation_errors\n FROM `workspace`.`default`.`eval_generations` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256\n)\nSELECT s.*,g.received_generations,g.expected_generations,\n       CASE WHEN s.received_suites < 15 OR g.received_generations < 36 THEN 'INCOMPLETE'\n            WHEN s.failed_cases+s.error_cases+g.generation_errors > 0 THEN 'FAILED' ELSE 'PASSED' END AS batch_status\nFROM suites s CROSS JOIN gen g"
+    },
+    {
+      "displayName": "Comparison",
+      "name": "comparison",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1),\nmodels AS (SELECT * FROM VALUES ('gpt-6.1-terra'),('gpt-6.1-sol'),('gpt-6-luna') AS m(model)),\nframeworks AS (SELECT * FROM VALUES ('deepeval','correctness'),('ragas','faithfulness'),('promptfoo','assertions'),('trulens','answer_relevance'),('inspect','exact_match') AS f(framework, metric))\nSELECT m.model, f.framework, f.metric, r.mean_score, round(100*r.pass_rate,2) AS pass_rate_pct,\n       r.eligible, r.skipped, r.failed, r.errors, round(100*r.coverage,2) AS coverage_pct,\n       CASE WHEN r.framework IS NULL THEN 'PENDING'\n            WHEN r.errors > 0 THEN 'ERROR' WHEN r.failed > 0 THEN 'FAILED' ELSE 'PASSED' END AS gate_status\nFROM models m CROSS JOIN frameworks f CROSS JOIN latest b\nLEFT JOIN `workspace`.`default`.`eval_runs` r ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256\n  AND r.config_sha256=b.config_sha256 AND r.model=m.model AND r.framework=f.framework\nORDER BY f.framework,m.model"
+    },
+    {
+      "displayName": "Failures",
+      "name": "failures",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1)\nSELECT r.model, r.framework, r.case_id, r.category, r.status, r.score, r.threshold, r.reason\nFROM `workspace`.`default`.`eval_cases` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256 WHERE r.status IN ('failed','error') ORDER BY r.framework,r.model,r.case_id"
+    },
+    {
+      "displayName": "Generation",
+      "name": "generation",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1)\nSELECT r.model, count(*) AS generation_attempts,\n       count_if(r.status='error') AS generation_errors,\n       round(avg(CASE WHEN r.status='ok' THEN r.duration_seconds END),3) AS avg_latency_s,\n       round(percentile_approx(CASE WHEN r.status='ok' THEN r.duration_seconds END,0.95),3) AS p95_latency_s,\n       sum(r.input_tokens) AS input_tokens, sum(r.output_tokens) AS output_tokens,\n       sum(r.reasoning_tokens) AS reasoning_tokens, count_if(NOT r.usage_known) AS unknown_usage_cases\nFROM `workspace`.`default`.`eval_generations` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256 GROUP BY r.model ORDER BY r.model"
+    },
+    {
+      "displayName": "Judge Usage",
+      "name": "judge_usage",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1)\nSELECT r.model, r.framework, r.judge_model, r.judge_requests,\n       r.judge_input_tokens, r.judge_output_tokens, r.mlflow_run_id, r.git_branch, r.commit_sha, r.ci_url\nFROM `workspace`.`default`.`eval_runs` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256 ORDER BY r.framework,r.model"
+    },
+    {
+      "displayName": "All Cases",
+      "name": "all_cases",
+      "query": "WITH latest AS (SELECT batch_id, dataset_sha256, config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode = 'live' ORDER BY event_time DESC, batch_id DESC LIMIT 1)\nSELECT r.model,r.framework,r.case_id,r.category,r.status,r.score,r.threshold,r.duration_seconds,r.reason\nFROM `workspace`.`default`.`eval_cases` r JOIN latest b ON r.batch_id=b.batch_id AND r.dataset_sha256=b.dataset_sha256 AND r.config_sha256=b.config_sha256 ORDER BY r.framework,r.model,r.case_id"
+    },
+    {
+      "displayName": "History Deepeval",
+      "name": "history_deepeval",
+      "query": "SELECT event_time,model,mean_score,pass_rate,coverage,batch_id,failed,errors,git_branch\nFROM `workspace`.`default`.`eval_runs` WHERE mode='live' AND framework='deepeval'\n AND dataset_sha256=(SELECT dataset_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND config_sha256=(SELECT config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND event_time >= current_timestamp() - INTERVAL 30 DAYS ORDER BY event_time"
+    },
+    {
+      "displayName": "History Ragas",
+      "name": "history_ragas",
+      "query": "SELECT event_time,model,mean_score,pass_rate,coverage,batch_id,failed,errors,git_branch\nFROM `workspace`.`default`.`eval_runs` WHERE mode='live' AND framework='ragas'\n AND dataset_sha256=(SELECT dataset_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND config_sha256=(SELECT config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND event_time >= current_timestamp() - INTERVAL 30 DAYS ORDER BY event_time"
+    },
+    {
+      "displayName": "History Promptfoo",
+      "name": "history_promptfoo",
+      "query": "SELECT event_time,model,mean_score,pass_rate,coverage,batch_id,failed,errors,git_branch\nFROM `workspace`.`default`.`eval_runs` WHERE mode='live' AND framework='promptfoo'\n AND dataset_sha256=(SELECT dataset_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND config_sha256=(SELECT config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND event_time >= current_timestamp() - INTERVAL 30 DAYS ORDER BY event_time"
+    },
+    {
+      "displayName": "History Trulens",
+      "name": "history_trulens",
+      "query": "SELECT event_time,model,mean_score,pass_rate,coverage,batch_id,failed,errors,git_branch\nFROM `workspace`.`default`.`eval_runs` WHERE mode='live' AND framework='trulens'\n AND dataset_sha256=(SELECT dataset_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND config_sha256=(SELECT config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND event_time >= current_timestamp() - INTERVAL 30 DAYS ORDER BY event_time"
+    },
+    {
+      "displayName": "History Inspect",
+      "name": "history_inspect",
+      "query": "SELECT event_time,model,mean_score,pass_rate,coverage,batch_id,failed,errors,git_branch\nFROM `workspace`.`default`.`eval_runs` WHERE mode='live' AND framework='inspect'\n AND dataset_sha256=(SELECT dataset_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND config_sha256=(SELECT config_sha256 FROM `workspace`.`default`.`eval_runs` WHERE mode='live' ORDER BY event_time DESC LIMIT 1)\n AND event_time >= current_timestamp() - INTERVAL 30 DAYS ORDER BY event_time"
+    }
+  ],
+  "pages": [
+    {
+      "displayName": "Model comparison",
+      "layout": [
+        {
+          "position": {
+            "height": 3,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "readme",
+            "textbox_spec": "# OpenAI model evaluations\nCompare models within each framework. Scores measure different properties and are never combined.\nPENDING means an upload is missing; INCOMPLETE is never a passing batch. This starter dataset contains 12 synthetic cases per model."
+          }
+        },
+        {
+          "position": {
+            "height": 3,
+            "width": 6,
+            "x": 0,
+            "y": 3
+          },
+          "widget": {
+            "name": "batch",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "overview",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`batch_id`",
+                      "name": "batch_id"
+                    },
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`received_suites`",
+                      "name": "received_suites"
+                    },
+                    {
+                      "expression": "`expected_suites`",
+                      "name": "expected_suites"
+                    },
+                    {
+                      "expression": "`received_generations`",
+                      "name": "received_generations"
+                    },
+                    {
+                      "expression": "`expected_generations`",
+                      "name": "expected_generations"
+                    },
+                    {
+                      "expression": "`failed_cases`",
+                      "name": "failed_cases"
+                    },
+                    {
+                      "expression": "`error_cases`",
+                      "name": "error_cases"
+                    },
+                    {
+                      "expression": "`batch_status`",
+                      "name": "batch_status"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "batch_id",
+                    "order": 0,
+                    "title": "Batch Id",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "event_time",
+                    "order": 1,
+                    "title": "Event Time",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "received_suites",
+                    "order": 2,
+                    "title": "Received Suites",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "expected_suites",
+                    "order": 3,
+                    "title": "Expected Suites",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "received_generations",
+                    "order": 4,
+                    "title": "Received Generations",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "expected_generations",
+                    "order": 5,
+                    "title": "Expected Generations",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "failed_cases",
+                    "order": 6,
+                    "title": "Failed Cases",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "error_cases",
+                    "order": 7,
+                    "title": "Error Cases",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "batch_status",
+                    "order": 8,
+                    "title": "Batch Status",
+                    "type": "string",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Latest received batch"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 9,
+            "width": 6,
+            "x": 0,
+            "y": 6
+          },
+          "widget": {
+            "name": "matrix",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "comparison",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`framework`",
+                      "name": "framework"
+                    },
+                    {
+                      "expression": "`metric`",
+                      "name": "metric"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    },
+                    {
+                      "expression": "`pass_rate_pct`",
+                      "name": "pass_rate_pct"
+                    },
+                    {
+                      "expression": "`eligible`",
+                      "name": "eligible"
+                    },
+                    {
+                      "expression": "`skipped`",
+                      "name": "skipped"
+                    },
+                    {
+                      "expression": "`failed`",
+                      "name": "failed"
+                    },
+                    {
+                      "expression": "`errors`",
+                      "name": "errors"
+                    },
+                    {
+                      "expression": "`coverage_pct`",
+                      "name": "coverage_pct"
+                    },
+                    {
+                      "expression": "`gate_status`",
+                      "name": "gate_status"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "model",
+                    "order": 0,
+                    "title": "Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "framework",
+                    "order": 1,
+                    "title": "Framework",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "metric",
+                    "order": 2,
+                    "title": "Metric",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "mean_score",
+                    "order": 3,
+                    "title": "Mean Score",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "pass_rate_pct",
+                    "order": 4,
+                    "title": "Pass Rate Pct",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "eligible",
+                    "order": 5,
+                    "title": "Eligible",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "skipped",
+                    "order": 6,
+                    "title": "Skipped",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "failed",
+                    "order": 7,
+                    "title": "Failed",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "errors",
+                    "order": 8,
+                    "title": "Errors",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "coverage_pct",
+                    "order": 9,
+                    "title": "Coverage Pct",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "gate_status",
+                    "order": 10,
+                    "title": "Gate Status",
+                    "type": "string",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Five frameworks × three models"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 5,
+            "width": 6,
+            "x": 0,
+            "y": 15
+          },
+          "widget": {
+            "name": "latency",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "generation",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`generation_attempts`",
+                      "name": "generation_attempts"
+                    },
+                    {
+                      "expression": "`generation_errors`",
+                      "name": "generation_errors"
+                    },
+                    {
+                      "expression": "`avg_latency_s`",
+                      "name": "avg_latency_s"
+                    },
+                    {
+                      "expression": "`p95_latency_s`",
+                      "name": "p95_latency_s"
+                    },
+                    {
+                      "expression": "`input_tokens`",
+                      "name": "input_tokens"
+                    },
+                    {
+                      "expression": "`output_tokens`",
+                      "name": "output_tokens"
+                    },
+                    {
+                      "expression": "`reasoning_tokens`",
+                      "name": "reasoning_tokens"
+                    },
+                    {
+                      "expression": "`unknown_usage_cases`",
+                      "name": "unknown_usage_cases"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "model",
+                    "order": 0,
+                    "title": "Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "generation_attempts",
+                    "order": 1,
+                    "title": "Generation Attempts",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "generation_errors",
+                    "order": 2,
+                    "title": "Generation Errors",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "avg_latency_s",
+                    "order": 3,
+                    "title": "Avg Latency S",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "p95_latency_s",
+                    "order": 4,
+                    "title": "P95 Latency S",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "input_tokens",
+                    "order": 5,
+                    "title": "Input Tokens",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "output_tokens",
+                    "order": 6,
+                    "title": "Output Tokens",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "reasoning_tokens",
+                    "order": 7,
+                    "title": "Reasoning Tokens",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "unknown_usage_cases",
+                    "order": 8,
+                    "title": "Unknown Usage Cases",
+                    "type": "float",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Generation latency and tokens — counted once"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 0,
+            "y": 20
+          },
+          "widget": {
+            "name": "failures",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "failures",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`framework`",
+                      "name": "framework"
+                    },
+                    {
+                      "expression": "`case_id`",
+                      "name": "case_id"
+                    },
+                    {
+                      "expression": "`category`",
+                      "name": "category"
+                    },
+                    {
+                      "expression": "`status`",
+                      "name": "status"
+                    },
+                    {
+                      "expression": "`score`",
+                      "name": "score"
+                    },
+                    {
+                      "expression": "`threshold`",
+                      "name": "threshold"
+                    },
+                    {
+                      "expression": "`reason`",
+                      "name": "reason"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "model",
+                    "order": 0,
+                    "title": "Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "framework",
+                    "order": 1,
+                    "title": "Framework",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "case_id",
+                    "order": 2,
+                    "title": "Case Id",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "category",
+                    "order": 3,
+                    "title": "Category",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "status",
+                    "order": 4,
+                    "title": "Status",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "score",
+                    "order": 5,
+                    "title": "Score",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "threshold",
+                    "order": 6,
+                    "title": "Threshold",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "reason",
+                    "order": 7,
+                    "title": "Reason",
+                    "type": "string",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Failed cases and evaluation errors"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        }
+      ],
+      "name": "overview"
+    },
+    {
+      "displayName": "Trends and details",
+      "layout": [
+        {
+          "position": {
+            "height": 2,
+            "width": 6,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "history_readme",
+            "textbox_spec": "# Scores over time\nThirty-day trends use the latest dataset and configuration hashes. Judge calls and tokens are listed separately from model generation."
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 3,
+            "x": 0,
+            "y": 2
+          },
+          "widget": {
+            "name": "trend_deepeval",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "history_deepeval",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "color": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "mean_score",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Deepeval — correctness"
+              }
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 3,
+            "x": 3,
+            "y": 2
+          },
+          "widget": {
+            "name": "trend_ragas",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "history_ragas",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "color": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "mean_score",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Ragas — faithfulness"
+              }
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 3,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "trend_promptfoo",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "history_promptfoo",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "color": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "mean_score",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Promptfoo — assertions"
+              }
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 3,
+            "x": 3,
+            "y": 8
+          },
+          "widget": {
+            "name": "trend_trulens",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "history_trulens",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "color": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "mean_score",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Trulens — answer_relevance"
+              }
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 6,
+            "width": 3,
+            "x": 0,
+            "y": 14
+          },
+          "widget": {
+            "name": "trend_inspect",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "history_inspect",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`event_time`",
+                      "name": "event_time"
+                    },
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`mean_score`",
+                      "name": "mean_score"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "color": {
+                  "fieldName": "model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "x": {
+                  "fieldName": "event_time",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "mean_score",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Inspect — exact_match"
+              }
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 0,
+            "y": 20
+          },
+          "widget": {
+            "name": "judge",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "judge_usage",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`framework`",
+                      "name": "framework"
+                    },
+                    {
+                      "expression": "`judge_model`",
+                      "name": "judge_model"
+                    },
+                    {
+                      "expression": "`judge_requests`",
+                      "name": "judge_requests"
+                    },
+                    {
+                      "expression": "`judge_input_tokens`",
+                      "name": "judge_input_tokens"
+                    },
+                    {
+                      "expression": "`judge_output_tokens`",
+                      "name": "judge_output_tokens"
+                    },
+                    {
+                      "expression": "`mlflow_run_id`",
+                      "name": "mlflow_run_id"
+                    },
+                    {
+                      "expression": "`git_branch`",
+                      "name": "git_branch"
+                    },
+                    {
+                      "expression": "`commit_sha`",
+                      "name": "commit_sha"
+                    },
+                    {
+                      "expression": "`ci_url`",
+                      "name": "ci_url"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "model",
+                    "order": 0,
+                    "title": "Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "framework",
+                    "order": 1,
+                    "title": "Framework",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "judge_model",
+                    "order": 2,
+                    "title": "Judge Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "judge_requests",
+                    "order": 3,
+                    "title": "Judge Requests",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "judge_input_tokens",
+                    "order": 4,
+                    "title": "Judge Input Tokens",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "judge_output_tokens",
+                    "order": 5,
+                    "title": "Judge Output Tokens",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "mlflow_run_id",
+                    "order": 6,
+                    "title": "Mlflow Run Id",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "git_branch",
+                    "order": 7,
+                    "title": "Git Branch",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "commit_sha",
+                    "order": 8,
+                    "title": "Commit Sha",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "ci_url",
+                    "order": 9,
+                    "title": "Ci Url",
+                    "type": "string",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Judge usage and run links"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 10,
+            "width": 6,
+            "x": 0,
+            "y": 28
+          },
+          "widget": {
+            "name": "all",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "all_cases",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`model`",
+                      "name": "model"
+                    },
+                    {
+                      "expression": "`framework`",
+                      "name": "framework"
+                    },
+                    {
+                      "expression": "`case_id`",
+                      "name": "case_id"
+                    },
+                    {
+                      "expression": "`category`",
+                      "name": "category"
+                    },
+                    {
+                      "expression": "`status`",
+                      "name": "status"
+                    },
+                    {
+                      "expression": "`score`",
+                      "name": "score"
+                    },
+                    {
+                      "expression": "`threshold`",
+                      "name": "threshold"
+                    },
+                    {
+                      "expression": "`reason`",
+                      "name": "reason"
+                    },
+                    {
+                      "expression": "`duration_seconds`",
+                      "name": "duration_seconds"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "encodings": {
+                "columns": [
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "model",
+                    "order": 0,
+                    "title": "Model",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "framework",
+                    "order": 1,
+                    "title": "Framework",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "case_id",
+                    "order": 2,
+                    "title": "Case Id",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "category",
+                    "order": 3,
+                    "title": "Category",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "status",
+                    "order": 4,
+                    "title": "Status",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "score",
+                    "order": 5,
+                    "title": "Score",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "threshold",
+                    "order": 6,
+                    "title": "Threshold",
+                    "type": "float",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "string",
+                    "fieldName": "reason",
+                    "order": 7,
+                    "title": "Reason",
+                    "type": "string",
+                    "visible": true
+                  },
+                  {
+                    "allowSearch": true,
+                    "displayAs": "number",
+                    "fieldName": "duration_seconds",
+                    "order": 8,
+                    "title": "Duration Seconds",
+                    "type": "float",
+                    "visible": true
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Every case, including skips"
+              },
+              "itemsPerPage": 20,
+              "withRowNumber": false
+            }
+          }
+        }
+      ],
+      "name": "details"
+    }
+  ]
+}

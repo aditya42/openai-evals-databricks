@@ -1,0 +1,7 @@
+CREATE SCHEMA IF NOT EXISTS `workspace`.`default`;
+
+CREATE TABLE IF NOT EXISTS `workspace`.`default`.`eval_runs` (`batch_id` STRING, `event_time` TIMESTAMP, `model` STRING, `framework` STRING, `metric` STRING, `dataset_sha256` STRING, `config_sha256` STRING, `mode` STRING, `judge_model` STRING, `mean_score` DOUBLE, `pass_rate` DOUBLE, `coverage` DOUBLE, `passed` BIGINT, `failed` BIGINT, `errors` BIGINT, `skipped` BIGINT, `eligible` BIGINT, `judge_requests` BIGINT, `judge_input_tokens` BIGINT, `judge_output_tokens` BIGINT, `mlflow_run_id` STRING, `commit_sha` STRING, `git_branch` STRING, `ci_url` STRING) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS `workspace`.`default`.`eval_cases` (`batch_id` STRING, `event_time` TIMESTAMP, `model` STRING, `framework` STRING, `case_id` STRING, `category` STRING, `metric` STRING, `status` STRING, `score` DOUBLE, `threshold` DOUBLE, `duration_seconds` DOUBLE, `reason` STRING, `dataset_sha256` STRING, `config_sha256` STRING, `mode` STRING, `mlflow_run_id` STRING) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS `workspace`.`default`.`eval_generations` (`batch_id` STRING, `event_time` TIMESTAMP, `model` STRING, `case_id` STRING, `status` STRING, `resolved_model` STRING, `duration_seconds` DOUBLE, `input_tokens` BIGINT, `output_tokens` BIGINT, `reasoning_tokens` BIGINT, `usage_known` BOOLEAN, `error` STRING, `dataset_sha256` STRING, `config_sha256` STRING, `mode` STRING) USING DELTA;

@@ -1,0 +1,14 @@
+{
+  "name": "openai-evals-databricks",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "promptfoo": "promptfoo"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "devDependencies": {
+    "promptfoo": "0.125.1"
+  }
+}
